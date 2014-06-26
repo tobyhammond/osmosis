@@ -3,6 +3,8 @@ import json
 from django.db import models
 from django.db import connections
 from django.db import transaction
+from django.core.exceptions import ValidationError
+from django.utils.importlib import import_module
 
 from google.appengine.ext import deferred
 from google.appengine.ext import db
@@ -24,21 +26,67 @@ def transactional(func):
         return _wrapped
 
 class ImportTask(models.Model):
-    source_data = models.FileField()
-    shard_count = models.PositiveIntegerField()
+    source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
+    shard_count = models.PositiveIntegerField(editable=False)
 
-    class Meta:
+    class Osmosis:
         forms = []
         rows_per_shard = 100
 
     @classmethod
+    def required_fields(cls):
+        meta = cls.get_meta()
+
+        fields = []
+
+        for form in meta.forms:
+            for name, field in form.base_fields.items():
+                if field.required:
+                    fields.append((name, field.help_text))
+        return fields
+
+    @classmethod
+    def optional_fields(cls):
+        meta = cls.get_meta()
+
+        fields = []
+
+        for form in meta.forms:
+            for name, field in form.base_fields.items():
+                if not field.required:
+                    fields.append((name, field.help_text))
+        return fields
+
+    @classmethod
+    def all_fields(cls):
+        meta = cls.get_meta()
+
+        fields = []
+
+        for form in meta.forms:
+            for name, field in form.base_fields.items():
+                fields.append((name, field.help_text))
+        return fields
+
+    @classmethod
     def get_meta(cls):
-        meta = getattr(cls, "Meta")
+        meta = getattr(cls, "Osmosis")
 
-        for attr in ( x for x in dir(ImportTask.Meta) if not x.startswith("_") ):
+        for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
             if not hasattr(meta, attr):
-                setattr(meta, attr, getattr(ImportTask.Meta, attr))
+                setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
 
+        #If we were given any forms by their module path, then swap them here
+        #so that get_meta().forms is always a list of classes
+        new_forms = []
+        for form in meta.forms:
+            if isinstance(form, basestring):
+                module, klass = form.rsplit(".", 1)
+                new_forms.append(getattr(import_module(module), klass))
+            else:
+                new_forms.append(form)
+
+        meta.forms = new_forms
         return meta
 
     def start(self):
@@ -101,6 +149,8 @@ class ImportTask(models.Model):
                 #Break at the end of the file
                 break
 
+    def preprocess_form(self, form, data):
+        return form
 
     def import_row(self, forms, cleaned_data):
         """
@@ -110,6 +160,10 @@ class ImportTask(models.Model):
 
     def handle_error(self, lineno, errors):
         raise NotImplementedError()
+
+class ModelImportTask(ImportTask):
+    def import_row(self, forms, cleaned_data):
+        return [ form.save() for form in forms ]
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
@@ -124,10 +178,10 @@ class ImportShard(models.Model):
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
 
         source_data = json.loads(this.source_data_json)
-        for i in xrange(this.last_row_processed, this.total_rows):  #Always contine from the last processed row
+        for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
 
-            forms = [ form(data) for form in meta.forms ]
+            forms = [ self.task.preprocess_form(form(data), data) for form in meta.forms ]
 
             if all([ form.is_valid() for form in forms ]):
                 #All forms are valid, let's process this shizzle
@@ -136,7 +190,11 @@ class ImportShard(models.Model):
                 for form in forms:
                     cleaned_data.update(form.cleaned_data)
 
-                self.task.import_row(forms, cleaned_data)
+                try:
+                    self.task.import_row(forms, cleaned_data)
+                except ValidationError, e:
+                    #We allow subclasses to raise a validation error on import_row
+                    self.task.handle_error(this.start_line_number + i, e.messages)
             else:
                 # We've encountered an error, call the error handler
                 errors = []
