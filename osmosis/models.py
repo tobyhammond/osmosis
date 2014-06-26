@@ -19,7 +19,7 @@ def transactional(func):
 
         return _wrapped
     else:
-        @transaction.atomic
+        @transaction.commit_on_success
         def _wrapped(*args, **kwargs):
             return func(*args, **kwargs)
 
@@ -199,8 +199,10 @@ class ImportShard(models.Model):
                 # We've encountered an error, call the error handler
                 errors = []
                 for form in forms:
-                    errors.extend(form.errors)
-
+                    for name, errs in form._get_errors().items():
+                        for err in errs:
+                            errors.append("{0}: {1}".format(name, err))
+                
                 self.task.handle_error(this.start_line_number + i, errors)
 
             #Now update the last processed row, transactionally
