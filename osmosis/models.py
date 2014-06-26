@@ -27,7 +27,6 @@ def transactional(func):
 
 class ImportTask(models.Model):
     source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
-    shard_count = models.PositiveIntegerField(editable=False)
 
     class Osmosis:
         forms = []
@@ -119,17 +118,18 @@ class ImportTask(models.Model):
     def process(self):
         meta = self.get_meta()
 
+        uploaded_file = self.source_data
         shard_data = []
         lineno = 0
         while True:
             lineno += 1  #Line numbers are 1-based
-            data = self.next_source_row()
+            data = self.next_source_row(uploaded_file)
 
             if data is False:
                 # Skip this row
                 continue
-
-            shard_data.append(data)  #Keep a buffer of the data to process in this shard
+            elif data:
+                shard_data.append(data)  #Keep a buffer of the data to process in this shard
 
             data_length = len(shard_data)
             if data_length == meta.rows_per_shard or not data:
@@ -137,7 +137,7 @@ class ImportTask(models.Model):
 
                 new_shard = ImportShard.objects.create(
                     task=self,
-                    source_data_json=json.dumps(data),
+                    source_data_json=json.dumps(shard_data),
                     last_row_processed=0,
                     total_rows=data_length,
                     start_line_number=lineno - data_length
