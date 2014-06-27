@@ -25,8 +25,22 @@ def transactional(func):
 
         return _wrapped
 
+class ImportStatus(object):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    FINISHED = "finished"
+
+    @classmethod
+    def choices(cls):
+        return ((ImportStatus.PENDING, "Pending"), (ImportStatus.IN_PROGRESS, "In Progress"), (ImportStatus.FINISHED, "Finished"))
+
 class ImportTask(models.Model):
     source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
+    row_count = models.PositiveIntegerField(default=0, editable=False)
+    shard_count = models.PositiveIntegerField(default=0, editable=False)
+    shards_processed = models.PositiveIntegerField(default=0, editable=False)
+
+    status = models.CharField(max_length=32, choices=ImportStatus.choices(), default=ImportStatus.PENDING, editable=False)
 
     class Osmosis:
         forms = []
@@ -106,7 +120,7 @@ class ImportTask(models.Model):
         if not line:
             return None
 
-        if not self.row_columns:
+        if not getattr(self, "row_columns", None):
             #On first iteration, the line will be the column headings, store those
             #and return False to skip processing
             self.row_columns = line.split(",") ##FIXME: Use CSV module
@@ -116,11 +130,17 @@ class ImportTask(models.Model):
         return { x: cols[i] for i, x in enumerate(self.row_columns) }
 
     def process(self):
+        #Reload, we've been pickled in'it
+        self = self.__class__.objects.get(pk=self.pk)
+        self.status = ImportStatus.IN_PROGRESS
+        self.save()
+
         meta = self.get_meta()
 
         uploaded_file = self.source_data
         shard_data = []
         lineno = 0
+
         while True:
             lineno += 1  #Line numbers are 1-based
             data = self.next_source_row(uploaded_file)
@@ -143,11 +163,17 @@ class ImportTask(models.Model):
                     start_line_number=lineno - data_length
                 )
 
+                self.shard_count += 1
+                self.save()
+
                 deferred.defer(new_shard.process)
 
             if not data:
                 #Break at the end of the file
                 break
+
+        # 2 == HEADER + 1-based to 0-based
+        self.__class__.objects.filter(pk=self.pk).update(row_count=lineno - 2)
 
     def preprocess_form(self, form, data):
         return form
@@ -158,10 +184,24 @@ class ImportTask(models.Model):
         """
         raise NotImplementedError()
 
-    def handle_error(self, lineno, errors):
+    def handle_error(self, lineno, data, errors):
         raise NotImplementedError()
 
-class ModelImportTask(ImportTask):
+    def finish(self):
+        """
+            Called when all shards have finished processing
+        """
+        pass
+
+    def save(self, *args, **kwargs):
+        if self.status == ImportStatus.IN_PROGRESS and self.shard_count and self.shards_processed == self.shard_count:
+            #Defer the finish callback when we've processed all shards
+            self.status = ImportStatus.FINISHED
+            deferred.defer(self.finish)
+
+        return super(ImportTask, self).save(*args, **kwargs)
+
+class ModelImportTaskMixin(object):
     def import_row(self, forms, cleaned_data):
         return [ form.save() for form in forms ]
 
@@ -202,12 +242,23 @@ class ImportShard(models.Model):
                     for name, errs in form._get_errors().items():
                         for err in errs:
                             errors.append("{0}: {1}".format(name, err))
-                
-                self.task.handle_error(this.start_line_number + i, errors)
+
+                self.task.handle_error(this.start_line_number + i, data, errors)
 
             #Now update the last processed row, transactionally
             @transactional
-            def update_shard():
-                pass
+            def update_shard(_this):
+                _this = ImportShard.objects.get(pk=_this.pk)
+                _this.last_row_processed += 1
+                _this.save()
+                return _this
 
-            update_shard()
+            this = update_shard(this)
+
+        @transactional
+        def update_task(_this):
+            task = ImportTask.objects.get(pk=_this.task_id)
+            task.shards_processed += 1
+            task.save()
+
+        update_task(this)
