@@ -8,13 +8,14 @@ import StringIO
 
 TEST_FILE_ONE = StringIO.StringIO()
 TEST_FILE_ONE.write("""
-Field1, Field2, Field3\n
-value1, value2, value3\n
-value1, value2, value3\n
-value1, value2, value3\n
-value1, value2, value3\n
-value1, value2, value3\n
-""")
+Field1, Field2, Field3
+value1, value2, value3
+value1, value2, value3
+value1, value2, value3
+value1, value2, value3
+value1, value2, value3
+""".lstrip())
+TEST_FILE_ONE.seek(0)
 
 class ImportTaskTests(TestCase):
     def test_start_defers_process(self):

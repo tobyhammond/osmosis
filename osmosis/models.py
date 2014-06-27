@@ -1,4 +1,6 @@
 import json
+import csv
+import StringIO
 
 from django.db import models
 from django.db import connections
@@ -120,13 +122,24 @@ class ImportTask(models.Model):
         if not line:
             return None
 
-        if not getattr(self, "row_columns", None):
-            #On first iteration, the line will be the column headings, store those
-            #and return False to skip processing
-            self.row_columns = line.split(",") ##FIXME: Use CSV module
+        if not line.strip():
+            #Skip lines with just whitespace
             return False
 
-        cols = line.split(",")
+        if not getattr(self, "row_columns", None):
+            pos = handle.tell()
+            self.dialect = csv.Sniffer().sniff(handle.read(1024))
+            handle.seek(pos)
+            reader = csv.reader(StringIO.StringIO(line), self.dialect)
+
+            #On first iteration, the line will be the column headings, store those
+            #and return False to skip processing
+            self.row_columns = reader.next()
+            return False
+        else:
+            reader = csv.reader(StringIO.StringIO(line), self.dialect)
+            cols = reader.next()
+
         return { x: cols[i] for i, x in enumerate(self.row_columns) }
 
     def process(self):
@@ -152,7 +165,7 @@ class ImportTask(models.Model):
                 shard_data.append(data)  #Keep a buffer of the data to process in this shard
 
             data_length = len(shard_data)
-            if data_length == meta.rows_per_shard or not data:
+            if shard_data and (data_length == meta.rows_per_shard or data is None):
                 #If we hit the predefined shard count, or the EOF of the file then process what we have
 
                 new_shard = ImportShard.objects.create(
@@ -167,6 +180,7 @@ class ImportTask(models.Model):
                 self.save()
 
                 deferred.defer(new_shard.process)
+                shard_data = []
 
             if not data:
                 #Break at the end of the file
@@ -216,7 +230,6 @@ class ImportShard(models.Model):
         meta = self.task.get_meta()
 
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
-
         source_data = json.loads(this.source_data_json)
         for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
