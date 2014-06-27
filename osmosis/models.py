@@ -222,15 +222,19 @@ class ModelImportTaskMixin(object):
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
     source_data_json = models.TextField()
-    last_row_processed = models.PositiveIntegerField()
-    total_rows = models.PositiveIntegerField()
-    start_line_number = models.PositiveIntegerField()
+    last_row_processed = models.PositiveIntegerField(default=0)
+    total_rows = models.PositiveIntegerField(default=0)
+    start_line_number = models.PositiveIntegerField(default=0)
 
     def process(self):
         meta = self.task.get_meta()
 
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
         source_data = json.loads(this.source_data_json)
+
+        #If there are no rows to process
+        mark_shard_complete = this.last_row_processed == this.total_rows - 1
+
         for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
 
@@ -268,10 +272,13 @@ class ImportShard(models.Model):
 
             this = update_shard(this)
 
-        @transactional
-        def update_task(_this):
-            task = ImportTask.objects.get(pk=_this.task_id)
-            task.shards_processed += 1
-            task.save()
+            mark_shard_complete = i == this.total_rows - 1 #If this was the last iteration then mark as complete
 
-        update_task(this)
+        if mark_shard_complete:
+            @transactional
+            def update_task(_this):
+                task = ImportTask.objects.get(pk=_this.task_id)
+                task.shards_processed += 1
+                task.save()
+
+            update_task(this)

@@ -1,7 +1,7 @@
 from django.test import TestCase
 import mock
 
-from osmosis.models import ImportTask
+from osmosis.models import ImportTask, ImportShard
 from contextlib import nested
 
 import StringIO
@@ -45,7 +45,32 @@ class ImportTaskTests(TestCase):
             self.assertEqual(5, mock_create.call_count)
 
     def test_shards_processed_updated(self):
-        pass
+
+        task = ImportTask()
+
+        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1)
+        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1)
+
+        def shard_get(*args, **kwargs):
+            if kwargs.values()[0] == 1:
+                return shard1
+            else:
+                return shard2
+
+        with mock.patch('osmosis.models.ImportTask.import_row'):
+            with mock.patch('osmosis.models.ImportTask.save'):
+                with mock.patch('osmosis.models.ImportShard.save'):
+                    with mock.patch('osmosis.models.ImportShard.objects.get', autospec=True, side_effect=shard_get):
+                        with mock.patch('osmosis.models.ImportTask.objects.get', return_value=task):
+                            shard1.process()
+
+                            self.assertEqual(1, task.shards_processed)
+
+                            shard1.process()
+                            self.assertEqual(1, task.shards_processed) #If the shard retries, don't increment again
+
+                            shard2.process()
+                            self.assertEqual(2, task.shards_processed)
 
     def test_finish_callback_deferred(self):
         pass
