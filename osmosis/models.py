@@ -5,6 +5,8 @@ import StringIO
 from django.db import models
 from django.db import connections
 from django.db import transaction
+from django.db.models.loading import get_model
+
 from django.core.exceptions import ValidationError
 from django.utils.importlib import import_module
 
@@ -126,27 +128,43 @@ class ImportTask(models.Model):
             #Skip lines with just whitespace
             return False
 
-        if not getattr(self, "row_columns", None):
-            pos = handle.tell()
-            self.dialect = csv.Sniffer().sniff(handle.read(1024))
-            handle.seek(pos)
-            reader = csv.reader(StringIO.StringIO(line), self.dialect)
+        if not getattr(self, "detected_dialect", None):
+            #Sniff for the dialect of the CSV file
 
+            pos = handle.tell()
+            dialect = csv.Sniffer().sniff(handle.read(1024))
+            handle.seek(pos)
+
+            dialect_attrs = [
+                "delimiter",
+                "doublequote",
+                "escapechar",
+                "lineterminator",
+                "quotechar",
+                "quoting",
+                "skipinitialspace"
+            ]
+
+            self.detected_dialect = { x: getattr(dialect, x) for x in dialect_attrs }
+
+        reader = csv.reader(StringIO.StringIO(line), **self.detected_dialect)
+
+        if not getattr(self, "detected_columns", None):
             #On first iteration, the line will be the column headings, store those
             #and return False to skip processing
-            self.row_columns = reader.next()
+            columns = reader.next()
+            self.detected_columns = columns
             return False
-        else:
-            reader = csv.reader(StringIO.StringIO(line), self.dialect)
-            cols = reader.next()
 
-        return { x: cols[i] for i, x in enumerate(self.row_columns) }
+        cols = self.detected_columns
+        values = reader.next()
+
+        return { x: values[i] for i, x in enumerate(cols) }
 
     def process(self):
         #Reload, we've been pickled in'it
         self = self.__class__.objects.get(pk=self.pk)
         self.status = ImportStatus.IN_PROGRESS
-        self.save()
 
         meta = self.get_meta()
 
@@ -170,6 +188,7 @@ class ImportTask(models.Model):
 
                 new_shard = ImportShard.objects.create(
                     task=self,
+                    task_model_path=".".join([self._meta.app_label, self.__class__.__name__]),
                     source_data_json=json.dumps(shard_data),
                     last_row_processed=0,
                     total_rows=data_length,
@@ -208,12 +227,17 @@ class ImportTask(models.Model):
         pass
 
     def save(self, *args, **kwargs):
+        defer_finish = False
         if self.status == ImportStatus.IN_PROGRESS and self.shard_count and self.shards_processed == self.shard_count:
             #Defer the finish callback when we've processed all shards
             self.status = ImportStatus.FINISHED
-            deferred.defer(self.finish)
+            defer_finish = True
 
-        return super(ImportTask, self).save(*args, **kwargs)
+        result = super(ImportTask, self).save(*args, **kwargs)
+
+        if defer_finish:
+            deferred.defer(self.finish)
+        return result
 
 class ModelImportTaskMixin(object):
     def import_row(self, forms, cleaned_data):
@@ -221,19 +245,23 @@ class ModelImportTaskMixin(object):
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
+    task_model_path = models.CharField(max_length=500)
+
     source_data_json = models.TextField()
     last_row_processed = models.PositiveIntegerField(default=0)
     total_rows = models.PositiveIntegerField(default=0)
     start_line_number = models.PositiveIntegerField(default=0)
+    complete = models.BooleanField()
 
     def process(self):
         meta = self.task.get_meta()
+        task_model = get_model(*self.task_model_path.split("."))
 
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
         source_data = json.loads(this.source_data_json)
 
         #If there are no rows to process
-        mark_shard_complete = this.last_row_processed == this.total_rows - 1
+        mark_shard_complete = this.last_row_processed == this.total_rows - 1 or this.total_rows == 0
 
         for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
@@ -277,8 +305,14 @@ class ImportShard(models.Model):
         if mark_shard_complete:
             @transactional
             def update_task(_this):
-                task = ImportTask.objects.get(pk=_this.task_id)
+                if _this.complete:
+                    return
+
+                task = task_model.objects.get(pk=_this.task_id)
                 task.shards_processed += 1
                 task.save()
+
+                _this.complete = True
+                _this.save()
 
             update_task(this)

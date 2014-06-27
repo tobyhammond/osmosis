@@ -1,7 +1,7 @@
 from django.test import TestCase
 import mock
 
-from osmosis.models import ImportTask, ImportShard
+from osmosis.models import ImportTask, ImportShard, ImportStatus
 from contextlib import nested
 
 import StringIO
@@ -48,8 +48,8 @@ class ImportTaskTests(TestCase):
 
         task = ImportTask()
 
-        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1)
-        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1)
+        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1, task_model_path="osmosis.ImportTask")
+        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1, task_model_path="osmosis.ImportTask")
 
         def shard_get(*args, **kwargs):
             if kwargs.values()[0] == 1:
@@ -73,7 +73,22 @@ class ImportTaskTests(TestCase):
                             self.assertEqual(2, task.shards_processed)
 
     def test_finish_callback_deferred(self):
-        pass
+        task = ImportTask(shard_count=1, shards_processed=1)
+
+        with mock.patch('django.db.models.Model.save') as save_patch:
+            with mock.patch('google.appengine.ext.deferred.defer') as def_patch:
+                task.save()
+                self.assertTrue(save_patch.called)
+
+                task.status = ImportStatus.IN_PROGRESS
+                task.save()
+
+                self.assertTrue(def_patch.called)
+
+            with mock.patch('google.appengine.ext.deferred.defer') as def_patch:
+                task.save()
+                self.assertFalse(def_patch.called) #Already been called, so shouldn't happen again
+
 
     def test_error_callback_on_error(self):
         pass
