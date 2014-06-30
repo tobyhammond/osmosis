@@ -215,8 +215,8 @@ class ImportTask(models.Model):
         # 2 == HEADER + 1-based to 0-based
         self.__class__.objects.filter(pk=self.pk).update(row_count=lineno - 2)
 
-    def preprocess_form(self, form, data):
-        return form
+    def instantiate_form(self, form_class, data):
+        return form_class(data)
 
     def import_row(self, forms, cleaned_data):
         """
@@ -273,7 +273,7 @@ class ImportShard(models.Model):
         for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
 
-            forms = [ self.task.preprocess_form(form(data), data) for form in meta.forms ]
+            forms = [ self.task.instantiate_form(form, data) for form in meta.forms ]
 
             if all([ form.is_valid() for form in forms ]):
                 #All forms are valid, let's process this shizzle
