@@ -13,6 +13,10 @@ from django.utils.importlib import import_module
 from google.appengine.ext import deferred
 from google.appengine.ext import db
 
+from google.appengine.api import files
+from google.appengine.ext.blobstore import BlobInfo
+from djangoappengine.storage import BlobstoreFile, BlobstoreStorage
+
 def transactional(func):
     if "djangoappengine" in unicode(connections['default']) or \
         "djangae" in unicode(connections['default']):
@@ -39,16 +43,28 @@ class ImportStatus(object):
         return ((ImportStatus.PENDING, "Pending"), (ImportStatus.IN_PROGRESS, "In Progress"), (ImportStatus.FINISHED, "Finished"))
 
 class ImportTask(models.Model):
+    model_path = models.CharField(max_length=500, editable=False)
+
     source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
+
+    error_csv = models.FileField("Error File", upload_to="/", editable=False, null=True) #FIXME: Should make upload_to configurable
+    error_csv_filename = models.CharField(max_length=500, editable=False)
+
     row_count = models.PositiveIntegerField(default=0, editable=False)
     shard_count = models.PositiveIntegerField(default=0, editable=False)
     shards_processed = models.PositiveIntegerField(default=0, editable=False)
 
     status = models.CharField(max_length=32, choices=ImportStatus.choices(), default=ImportStatus.PENDING, editable=False)
 
+    def __init__(self, *args, **kwargs):
+        super(ImportTask, self).__init__(*args, **kwargs)
+        if not self.model_path:
+            self.model_path = ".".join([self._meta.app_label, self.__class__.__name__])
+
     class Osmosis:
         forms = []
         rows_per_shard = 100
+        generate_error_csv = True
 
     @classmethod
     def required_fields(cls):
@@ -195,7 +211,6 @@ class ImportTask(models.Model):
 
                 new_shard = ImportShard.objects.create(
                     task=self,
-                    task_model_path=".".join([self._meta.app_label, self.__class__.__name__]),
                     source_data_json=json.dumps(shard_data),
                     last_row_processed=0,
                     total_rows=data_length,
@@ -225,13 +240,41 @@ class ImportTask(models.Model):
         raise NotImplementedError()
 
     def handle_error(self, lineno, data, errors):
-        raise NotImplementedError()
+        self._write_error_row(data, errors)
+
+    def _write_error_row(self, data, errors):
+        if not get_model(*self.model_path.split(".")).get_meta().generate_error_csv:
+            return
+
+        cols = getattr(self, "detected_columns", sorted(data.keys())) + [ "errors" ]
+
+        to_write = [ data.get(x, "") for x in cols ] + [ ". ".join(errors) ]
+
+        first_time = False
+        if not self.error_csv_filename:
+            #We haven't initialized the blob yet
+            self.error_csv_filename = files.blobstore.create(mime_type='application/octet-stream')
+            self.save()
+            first_time = True
+
+        with files.open(self.error_csv_filename, "a") as f:
+            writer = csv.writer(f)
+            if first_time:
+                writer.writerow(cols)
+            writer.writerow(to_write)
 
     def finish(self):
         """
             Called when all shards have finished processing
         """
-        pass
+        if self.error_csv_filename:
+            files.finalize(self.error_csv_filename)
+            blob_key = files.blobstore.get_blob_key(self.error_csv_filename)
+            blob_info = BlobInfo.get(blob_key)
+            blob_file = BlobstoreFile("errors.csv", 'rb', BlobstoreStorage())
+            blob_file.blobstore_info = blob_info
+            self.error_csv = blob_file
+            self.save()
 
     def save(self, *args, **kwargs):
         defer_finish = False
@@ -252,7 +295,6 @@ class ModelImportTaskMixin(object):
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
-    task_model_path = models.CharField(max_length=500)
 
     source_data_json = models.TextField()
     last_row_processed = models.PositiveIntegerField(default=0)
@@ -262,7 +304,7 @@ class ImportShard(models.Model):
 
     def process(self):
         meta = self.task.get_meta()
-        task_model = get_model(*self.task_model_path.split("."))
+        task_model = get_model(*self.task.model_path.split("."))
 
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
         source_data = json.loads(this.source_data_json)
