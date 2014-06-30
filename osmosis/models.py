@@ -132,8 +132,15 @@ class ImportTask(models.Model):
             #Sniff for the dialect of the CSV file
 
             pos = handle.tell()
-            dialect = csv.Sniffer().sniff(handle.read(1024))
+            handle.seek(0)
+            readahead = handle.read(1024)
             handle.seek(pos)
+
+            try:
+                dialect = csv.Sniffer().sniff(readahead, ",")
+            except csv.Error:
+                #Fallback to excel format
+                dialect = csv.excel
 
             dialect_attrs = [
                 "delimiter",
