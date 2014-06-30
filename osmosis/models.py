@@ -286,7 +286,11 @@ class ImportShard(models.Model):
                     self.task.import_row(forms, cleaned_data)
                 except ValidationError, e:
                     #We allow subclasses to raise a validation error on import_row
-                    self.task.handle_error(this.start_line_number + i, e.messages)
+                    errors = []
+                    for name, errs in e.message_dict.items():
+                        for err in errs:
+                            errors.append("{0}: {1}".format(name, err))
+                    self.task.handle_error(this.start_line_number + i, cleaned_data, errors)
             else:
                 # We've encountered an error, call the error handler
                 errors = []
