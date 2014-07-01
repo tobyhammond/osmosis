@@ -45,10 +45,10 @@ class ImportStatus(object):
 class ImportTask(models.Model):
     model_path = models.CharField(max_length=500, editable=False)
 
-    source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
+    source_data = models.FileField("File", upload_to="/", max_length=1023) #FIXME: We should make upload_to somehow configurable
 
-    error_csv = models.FileField("Error File", upload_to="/", editable=False, null=True) #FIXME: Should make upload_to configurable
-    error_csv_filename = models.CharField(max_length=500, editable=False)
+    error_csv = models.FileField("Error File", upload_to="/", editable=False, null=True, max_length=1023) #FIXME: Should make upload_to configurable
+    error_csv_filename = models.CharField(max_length=1023, editable=False)
 
     row_count = models.PositiveIntegerField(default=0, editable=False)
     shard_count = models.PositiveIntegerField(default=0, editable=False)
