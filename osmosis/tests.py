@@ -48,8 +48,8 @@ class ImportTaskTests(TestCase):
 
         task = ImportTask()
 
-        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1, task_model_path="osmosis.ImportTask")
-        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1, task_model_path="osmosis.ImportTask")
+        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1)
+        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1)
 
         def shard_get(*args, **kwargs):
             if kwargs.values()[0] == 1:
