@@ -1,10 +1,18 @@
+#STANDARD LIB
+from contextlib import nested
+import StringIO
+
+# LIBRARIES
+from django import forms
 from django.test import TestCase
 import mock
 
+# OSMOSIS
+from osmosis.forms import BooleanInterpreterMixin
 from osmosis.models import ImportTask, ImportShard, ImportStatus
-from contextlib import nested
 
-import StringIO
+
+
 
 TEST_FILE_ONE = StringIO.StringIO()
 TEST_FILE_ONE.write("""
@@ -110,3 +118,30 @@ class ImportTaskTests(TestCase):
 
     def test_process_reentrant(self):
         pass
+
+
+class FormTests(TestCase):
+
+    def test_boolean_interpretation_mixin(self):
+        """ Test the BooleanInterpreterMixin, which should cause a ModelForm's boolean fields to
+            interpret "0" and "false" values as False.
+        """
+        class ImportShardForm(BooleanInterpreterMixin, forms.ModelForm):
+            class Meta:
+                model = ImportShard # This model just happens to have a BooleanField on it
+                fields = ('complete',)
+
+        checks = {
+            False: ('0', 'FALSE', 'false', 'FalSe',),
+            True: ('1', 'TRUE', 'TruE', 'YeS',)
+        }
+        failure_msg = "Expected CSV input value '%s' to be interpreted as %s, but it was %s."
+        for expected_boolean, values in checks.items():
+            for input_value in values:
+                form = ImportShardForm({'complete': input_value})
+                assert form.is_valid() # for the sanity of the test & to generate cleaned_data
+                form_value = form.cleaned_data['complete']
+                self.assertEqual(
+                    form_value, expected_boolean,
+                    failure_msg % (input_value, expected_boolean, form_value)
+                )
