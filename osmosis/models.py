@@ -68,10 +68,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def required_fields(cls):
+        """ Get a list of the required form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 if field.required:
@@ -80,10 +79,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def optional_fields(cls):
+        """ Get a list of the optional form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 if not field.required:
@@ -92,10 +90,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def all_fields(cls):
+        """ Get an aggregate list of the form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 fields.append((name, field.help_text))
@@ -103,6 +100,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def get_meta(cls):
+        """ Get the info from self.Osmosis (where self can be a subclass), using defaults from
+            the parent ImportTask.Osmosis for values which are not defined on SubClass.Osmosis.
+        """
         meta = getattr(cls, "Osmosis")
 
         for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
