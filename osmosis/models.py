@@ -65,6 +65,7 @@ class ImportTask(models.Model):
         forms = []
         rows_per_shard = 100
         generate_error_csv = True
+        queue = deferred.deferred._DEFAULT_QUEUE
 
     @classmethod
     def required_fields(cls):
@@ -126,11 +127,15 @@ class ImportTask(models.Model):
 
         return meta
 
+    def defer(self, kallable, *args, **kwargs):
+        kwargs['_queue'] = self.get_meta().queue
+        deferred.defer(kallable, *args, **kwargs)
+
     def start(self):
         self.save()  #Make sure we are saved before processing
 
         self.row_columns = None
-        deferred.defer(self.process)
+        self.defer(self.process)
 
     def next_source_row(self, handle):
         """
@@ -224,7 +229,7 @@ class ImportTask(models.Model):
                 self.shard_count += 1
                 self.save()
 
-                deferred.defer(new_shard.process)
+                self.defer(new_shard.process)
                 shard_data = []
 
             if not data:
@@ -290,7 +295,7 @@ class ImportTask(models.Model):
         result = super(ImportTask, self).save(*args, **kwargs)
 
         if defer_finish:
-            deferred.defer(self.finish)
+            self.defer(self.finish)
         return result
 
 class ModelImportTaskMixin(object):
