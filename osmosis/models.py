@@ -105,21 +105,25 @@ class ImportTask(models.Model):
         """
         meta = getattr(cls, "Osmosis")
 
-        for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
-            if not hasattr(meta, attr):
-                setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
+        if not hasattr(meta, "_initialised"):
 
-        #If we were given any forms by their module path, then swap them here
-        #so that get_meta().forms is always a list of classes
-        new_forms = []
-        for form in meta.forms:
-            if isinstance(form, basestring):
-                module, klass = form.rsplit(".", 1)
-                new_forms.append(getattr(import_module(module), klass))
-            else:
-                new_forms.append(form)
+            for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
+                if not hasattr(meta, attr):
+                    setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
 
-        meta.forms = new_forms
+            #If we were given any forms by their module path, then swap them here
+            #so that meta.forms is always a list of classes
+            new_forms = []
+            for form in meta.forms:
+                if isinstance(form, basestring):
+                    module, klass = form.rsplit(".", 1)
+                    new_forms.append(getattr(import_module(module), klass))
+                else:
+                    new_forms.append(form)
+            meta.forms = new_forms
+
+            meta._initialised = True
+
         return meta
 
     def start(self):
