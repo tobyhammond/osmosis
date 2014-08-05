@@ -13,6 +13,10 @@ from django.utils.importlib import import_module
 from google.appengine.ext import deferred
 from google.appengine.ext import db
 
+from google.appengine.api import files
+from google.appengine.ext.blobstore import BlobInfo
+from djangoappengine.storage import BlobstoreFile, BlobstoreStorage
+
 def transactional(func):
     if "djangoappengine" in unicode(connections['default']) or \
         "djangae" in unicode(connections['default']):
@@ -39,23 +43,35 @@ class ImportStatus(object):
         return ((ImportStatus.PENDING, "Pending"), (ImportStatus.IN_PROGRESS, "In Progress"), (ImportStatus.FINISHED, "Finished"))
 
 class ImportTask(models.Model):
-    source_data = models.FileField("File", upload_to="/") #FIXME: We should make upload_to somehow configurable
+    model_path = models.CharField(max_length=500, editable=False)
+
+    source_data = models.FileField("File", upload_to="/", max_length=1023) #FIXME: We should make upload_to somehow configurable
+
+    error_csv = models.FileField("Error File", upload_to="/", editable=False, null=True, max_length=1023) #FIXME: Should make upload_to configurable
+    error_csv_filename = models.CharField(max_length=1023, editable=False)
+
     row_count = models.PositiveIntegerField(default=0, editable=False)
     shard_count = models.PositiveIntegerField(default=0, editable=False)
     shards_processed = models.PositiveIntegerField(default=0, editable=False)
 
     status = models.CharField(max_length=32, choices=ImportStatus.choices(), default=ImportStatus.PENDING, editable=False)
 
+    def __init__(self, *args, **kwargs):
+        super(ImportTask, self).__init__(*args, **kwargs)
+        if not self.model_path:
+            self.model_path = ".".join([self._meta.app_label, self.__class__.__name__])
+
     class Osmosis:
         forms = []
         rows_per_shard = 100
+        generate_error_csv = True
+        queue = deferred.deferred._DEFAULT_QUEUE
 
     @classmethod
     def required_fields(cls):
+        """ Get a list of the required form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 if field.required:
@@ -64,10 +80,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def optional_fields(cls):
+        """ Get a list of the optional form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 if not field.required:
@@ -76,10 +91,9 @@ class ImportTask(models.Model):
 
     @classmethod
     def all_fields(cls):
+        """ Get an aggregate list of the form fields from all of the forms in cls.Osmosis. """
         meta = cls.get_meta()
-
         fields = []
-
         for form in meta.forms:
             for name, field in form.base_fields.items():
                 fields.append((name, field.help_text))
@@ -87,30 +101,41 @@ class ImportTask(models.Model):
 
     @classmethod
     def get_meta(cls):
+        """ Get the info from self.Osmosis (where self can be a subclass), using defaults from
+            the parent ImportTask.Osmosis for values which are not defined on SubClass.Osmosis.
+        """
         meta = getattr(cls, "Osmosis")
 
-        for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
-            if not hasattr(meta, attr):
-                setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
+        if not hasattr(meta, "_initialised"):
 
-        #If we were given any forms by their module path, then swap them here
-        #so that get_meta().forms is always a list of classes
-        new_forms = []
-        for form in meta.forms:
-            if isinstance(form, basestring):
-                module, klass = form.rsplit(".", 1)
-                new_forms.append(getattr(import_module(module), klass))
-            else:
-                new_forms.append(form)
+            for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
+                if not hasattr(meta, attr):
+                    setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
 
-        meta.forms = new_forms
+            #If we were given any forms by their module path, then swap them here
+            #so that meta.forms is always a list of classes
+            new_forms = []
+            for form in meta.forms:
+                if isinstance(form, basestring):
+                    module, klass = form.rsplit(".", 1)
+                    new_forms.append(getattr(import_module(module), klass))
+                else:
+                    new_forms.append(form)
+            meta.forms = new_forms
+
+            meta._initialised = True
+
         return meta
+
+    def defer(self, kallable, *args, **kwargs):
+        kwargs['_queue'] = self.get_meta().queue
+        deferred.defer(kallable, *args, **kwargs)
 
     def start(self):
         self.save()  #Make sure we are saved before processing
 
         self.row_columns = None
-        deferred.defer(self.process)
+        self.defer(self.process)
 
     def next_source_row(self, handle):
         """
@@ -132,8 +157,15 @@ class ImportTask(models.Model):
             #Sniff for the dialect of the CSV file
 
             pos = handle.tell()
-            dialect = csv.Sniffer().sniff(handle.read(1024))
+            handle.seek(0)
+            readahead = handle.read(1024)
             handle.seek(pos)
+
+            try:
+                dialect = csv.Sniffer().sniff(readahead, ",")
+            except csv.Error:
+                #Fallback to excel format
+                dialect = csv.excel
 
             dialect_attrs = [
                 "delimiter",
@@ -188,7 +220,6 @@ class ImportTask(models.Model):
 
                 new_shard = ImportShard.objects.create(
                     task=self,
-                    task_model_path=".".join([self._meta.app_label, self.__class__.__name__]),
                     source_data_json=json.dumps(shard_data),
                     last_row_processed=0,
                     total_rows=data_length,
@@ -198,7 +229,7 @@ class ImportTask(models.Model):
                 self.shard_count += 1
                 self.save()
 
-                deferred.defer(new_shard.process)
+                self.defer(new_shard.process)
                 shard_data = []
 
             if not data:
@@ -208,8 +239,8 @@ class ImportTask(models.Model):
         # 2 == HEADER + 1-based to 0-based
         self.__class__.objects.filter(pk=self.pk).update(row_count=lineno - 2)
 
-    def preprocess_form(self, form, data):
-        return form
+    def instantiate_form(self, form_class, data):
+        return form_class(data)
 
     def import_row(self, forms, cleaned_data):
         """
@@ -218,13 +249,41 @@ class ImportTask(models.Model):
         raise NotImplementedError()
 
     def handle_error(self, lineno, data, errors):
-        raise NotImplementedError()
+        self._write_error_row(data, errors)
+
+    def _write_error_row(self, data, errors):
+        if not get_model(*self.model_path.split(".")).get_meta().generate_error_csv:
+            return
+
+        cols = getattr(self, "detected_columns", sorted(data.keys())) + [ "errors" ]
+
+        to_write = [ data.get(x, "") for x in cols ] + [ ". ".join(errors) ]
+
+        first_time = False
+        if not self.error_csv_filename:
+            #We haven't initialized the blob yet
+            self.error_csv_filename = files.blobstore.create(mime_type='application/octet-stream')
+            self.save()
+            first_time = True
+
+        with files.open(self.error_csv_filename, "a") as f:
+            writer = csv.writer(f)
+            if first_time:
+                writer.writerow(cols)
+            writer.writerow(to_write)
 
     def finish(self):
         """
             Called when all shards have finished processing
         """
-        pass
+        if self.error_csv_filename:
+            files.finalize(self.error_csv_filename)
+            blob_key = files.blobstore.get_blob_key(self.error_csv_filename)
+            blob_info = BlobInfo.get(blob_key)
+            blob_file = BlobstoreFile("errors.csv", 'rb', BlobstoreStorage())
+            blob_file.blobstore_info = blob_info
+            self.error_csv = blob_file
+            self.save()
 
     def save(self, *args, **kwargs):
         defer_finish = False
@@ -236,7 +295,7 @@ class ImportTask(models.Model):
         result = super(ImportTask, self).save(*args, **kwargs)
 
         if defer_finish:
-            deferred.defer(self.finish)
+            self.defer(self.finish)
         return result
 
 class ModelImportTaskMixin(object):
@@ -245,7 +304,6 @@ class ModelImportTaskMixin(object):
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
-    task_model_path = models.CharField(max_length=500)
 
     source_data_json = models.TextField()
     last_row_processed = models.PositiveIntegerField(default=0)
@@ -255,7 +313,7 @@ class ImportShard(models.Model):
 
     def process(self):
         meta = self.task.get_meta()
-        task_model = get_model(*self.task_model_path.split("."))
+        task_model = get_model(*self.task.model_path.split("."))
 
         this = ImportShard.objects.get(pk=self.pk)  #Reload, self is pickled
         source_data = json.loads(this.source_data_json)
@@ -266,7 +324,7 @@ class ImportShard(models.Model):
         for i in xrange(this.last_row_processed, this.total_rows):  #Always continue from the last processed row
             data = source_data[i]
 
-            forms = [ self.task.preprocess_form(form(data), data) for form in meta.forms ]
+            forms = [ self.task.instantiate_form(form, data) for form in meta.forms ]
 
             if all([ form.is_valid() for form in forms ]):
                 #All forms are valid, let's process this shizzle
@@ -279,7 +337,11 @@ class ImportShard(models.Model):
                     self.task.import_row(forms, cleaned_data)
                 except ValidationError, e:
                     #We allow subclasses to raise a validation error on import_row
-                    self.task.handle_error(this.start_line_number + i, e.messages)
+                    errors = []
+                    for name, errs in e.message_dict.items():
+                        for err in errs:
+                            errors.append("{0}: {1}".format(name, err))
+                    self.task.handle_error(this.start_line_number + i, cleaned_data, errors)
             else:
                 # We've encountered an error, call the error handler
                 errors = []
