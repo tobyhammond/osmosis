@@ -74,7 +74,7 @@ class ImportTask(models.Model):
         fields = []
         for form in meta.forms:
             for name, field in form.base_fields.items():
-                if field.required:
+                if field.required and field.initial is None:
                     fields.append((name, field.help_text))
         return fields
 
@@ -85,7 +85,7 @@ class ImportTask(models.Model):
         fields = []
         for form in meta.forms:
             for name, field in form.base_fields.items():
-                if not field.required:
+                if not field.required or (field.required and field.initial is not None):
                     fields.append((name, field.help_text))
         return fields
 
