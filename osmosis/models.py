@@ -338,9 +338,15 @@ class ImportShard(models.Model):
                 except ValidationError, e:
                     #We allow subclasses to raise a validation error on import_row
                     errors = []
-                    for name, errs in e.message_dict.items():
-                        for err in errs:
-                            errors.append("{0}: {1}".format(name, err))
+                    if hasattr(e, 'message_dict'):
+                        for name, errs in e.message_dict.items():
+                            for err in errs:
+                                errors.append("{0}: {1}".format(name, err))
+                    else:
+                        # Pre 1.6, ValidationError does not necessarily have a message_dict
+                        for err in e.messages:
+                            errors.append(err)
+
                     self.task.handle_error(this.start_line_number + i, cleaned_data, errors)
             else:
                 # We've encountered an error, call the error handler
