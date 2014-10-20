@@ -346,7 +346,7 @@ class ImportShard(models.Model):
                 # We've encountered an error, call the error handler
                 errors = []
                 for form in forms:
-                    for name, errs in form._get_errors().items():
+                    for name, errs in form.errors.items():
                         for err in errs:
                             errors.append("{0}: {1}".format(name, err))
 
