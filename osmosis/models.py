@@ -309,7 +309,7 @@ class ImportShard(models.Model):
     last_row_processed = models.PositiveIntegerField(default=0)
     total_rows = models.PositiveIntegerField(default=0)
     start_line_number = models.PositiveIntegerField(default=0)
-    complete = models.BooleanField()
+    complete = models.BooleanField(default=False)
 
     def process(self):
         meta = self.task.get_meta()
