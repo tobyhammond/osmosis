@@ -15,7 +15,12 @@ from google.appengine.ext import db
 
 from google.appengine.api import files
 from google.appengine.ext.blobstore import BlobInfo
-from djangoappengine.storage import BlobstoreFile, BlobstoreStorage
+
+try:
+    from djangae.storage import BlobstoreFile, BlobstoreStorage
+except ImportError:
+    from djangoappengine.storage import BlobstoreFile, BlobstoreStorage
+
 
 def transactional(func):
     if "djangoappengine" in unicode(connections['default']) or \
@@ -309,7 +314,7 @@ class ImportShard(models.Model):
     last_row_processed = models.PositiveIntegerField(default=0)
     total_rows = models.PositiveIntegerField(default=0)
     start_line_number = models.PositiveIntegerField(default=0)
-    complete = models.BooleanField()
+    complete = models.BooleanField(default=False)
 
     def process(self):
         meta = self.task.get_meta()
@@ -346,7 +351,7 @@ class ImportShard(models.Model):
                 # We've encountered an error, call the error handler
                 errors = []
                 for form in forms:
-                    for name, errs in form._get_errors().items():
+                    for name, errs in form.errors.items():
                         for err in errs:
                             errors.append("{0}: {1}".format(name, err))
 
