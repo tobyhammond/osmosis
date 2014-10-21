@@ -15,7 +15,12 @@ from google.appengine.ext import db
 
 from google.appengine.api import files
 from google.appengine.ext.blobstore import BlobInfo
-from djangae.storage import BlobstoreFile, BlobstoreStorage
+
+try:
+    from djangae.storage import BlobstoreFile, BlobstoreStorage
+except ImportError:
+    from djangoappengine.storage import BlobstoreFile, BlobstoreStorage
+
 
 def transactional(func):
     if "djangoappengine" in unicode(connections['default']) or \
