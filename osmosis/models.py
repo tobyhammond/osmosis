@@ -326,7 +326,7 @@ class ImportShard(models.Model):
     complete = models.BooleanField(default=False)
     error_csv_filename = models.CharField(max_length=1023)
 
-    error_file = StringIO.StringIO()
+    errors = []
 
     def process(self):
         meta = self.task.get_meta()
@@ -412,9 +412,7 @@ class ImportShard(models.Model):
             return
 
         cols = getattr(self.task, "detected_columns", sorted(data.keys())) + [ "errors" ]
-        writer = csv.writer(self.error_file)
-        to_write = data.values() + [ ". ".join(errors) ]
-        writer.writerow(to_write)
+        self.errors.append(data.values() + [ ". ".join(errors) ])
 
     def _error_csv_filename(self):
         meta = self.task.get_meta()
@@ -430,5 +428,6 @@ class ImportShard(models.Model):
         self.save()
 
         with cloudstorage.open(self.error_csv_filename, "w") as f:
-            f.write(self.error_file.getvalue())
-        self.error_file.close()
+            writer = csv.writer(f)
+            for error in self.errors:
+                writer.writerow(error)
