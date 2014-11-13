@@ -312,9 +312,14 @@ class ImportTask(models.Model):
             self.defer(self.finish)
         return result
 
+    def handle_error(self, lineno, data, errors):
+        pass
+
+
 class ModelImportTaskMixin(object):
     def import_row(self, forms, cleaned_data):
         return [ form.save() for form in forms ]
+
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
