@@ -331,7 +331,9 @@ class ImportShard(models.Model):
     complete = models.BooleanField(default=False)
     error_csv_filename = models.CharField(max_length=1023)
 
-    errors = []
+    def __init__(self, *args, **kwargs):
+        self.errors = []
+        super(ImportShard, self).__init___(*args, **kwargs)
 
     def process(self):
         meta = self.task.get_meta()
