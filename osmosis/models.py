@@ -1,6 +1,7 @@
 import json
 import csv
 import StringIO
+import logging
 
 from django.db import models
 from django.db import connections
@@ -13,8 +14,10 @@ from django.utils.importlib import import_module
 from google.appengine.ext import deferred
 from google.appengine.ext import db
 
-from google.appengine.api import files
-from google.appengine.ext.blobstore import BlobInfo
+from google.appengine.api.app_identity import get_default_gcs_bucket_name
+from google.appengine.ext.blobstore import BlobInfo, create_gs_key
+
+import cloudstorage
 
 try:
     from djangae.storage import BlobstoreFile, BlobstoreStorage
@@ -71,6 +74,7 @@ class ImportTask(models.Model):
         rows_per_shard = 100
         generate_error_csv = True
         queue = deferred.deferred._DEFAULT_QUEUE
+        error_csv_subdirectory = "osmosis-errors"
 
     @classmethod
     def required_fields(cls):
@@ -253,46 +257,56 @@ class ImportTask(models.Model):
         """
         raise NotImplementedError()
 
-    def handle_error(self, lineno, data, errors):
-        self._write_error_row(data, errors)
-
-    def _write_error_row(self, data, errors):
-        if not get_model(*self.model_path.split(".")).get_meta().generate_error_csv:
-            return
-
-        cols = getattr(self, "detected_columns", sorted(data.keys())) + [ "errors" ]
-
-        to_write = [ data.get(x, "") for x in cols ] + [ ". ".join(errors) ]
-
-        first_time = False
-        if not self.error_csv_filename:
-            #We haven't initialized the blob yet
-            self.error_csv_filename = files.blobstore.create(mime_type='application/octet-stream')
-            self.save()
-            first_time = True
-
-        with files.open(self.error_csv_filename, "a") as f:
-            writer = csv.writer(f)
-            if first_time:
-                writer.writerow(cols)
-            writer.writerow(to_write)
+    def _error_csv_filename(self):
+        meta = self.get_meta()
+        return '/%s/%s/%s.csv' % (
+            get_default_gcs_bucket_name(),
+            meta.error_csv_subdirectory,
+            self.pk
+        )
 
     def finish(self):
         """
             Called when all shards have finished processing
         """
-        if self.error_csv_filename:
-            files.finalize(self.error_csv_filename)
-            blob_key = files.blobstore.get_blob_key(self.error_csv_filename)
-            blob_info = BlobInfo.get(blob_key)
-            blob_file = BlobstoreFile("errors.csv", 'rb', BlobstoreStorage())
-            blob_file.blobstore_info = blob_info
-            self.error_csv = blob_file
-            self.save()
+        if self.get_meta().generate_error_csv:
+            self.error_csv_filename = self._error_csv_filename()
+
+            with cloudstorage.open(self.error_csv_filename, 'w') as f:
+                # Concat all error csvs from shards into 1 file
+                has_written = False
+                for shard in self.importshard_set.all():
+                    if not shard.error_csv_filename:
+                        continue
+
+                    # If this is the first row, write the column headers
+                    if not has_written:
+                        data = json.loads(shard.source_data_json)[0]
+                        cols = getattr(self, "detected_columns", sorted(data.keys())) + [ "errors" ]
+                        csvwriter = csv.writer(f)
+                        csvwriter.writerow(cols)
+                        has_written = True
+
+                    # Write the shard's error file into the master file
+                    f.write(cloudstorage.open(shard.error_csv_filename).read())
+                    cloudstorage.delete(shard.error_csv_filename)
+
+            if has_written:
+                # Create a blobstore key for the GCS file
+                blob_key = create_gs_key('/gs%s' % self.error_csv_filename)
+                self.error_csv = '%s/errors.csv' % blob_key
+                self.save()
+            else:
+                cloudstorage.delete(self.error_csv_filename)
 
     def save(self, *args, **kwargs):
         defer_finish = False
-        if self.status == ImportStatus.IN_PROGRESS and self.shard_count and self.shards_processed == self.shard_count:
+        if all([
+            self.status == ImportStatus.IN_PROGRESS,
+            self.shard_count,
+            self.shards_processed == self.shard_count,
+            self.importshard_set.filter(error_csv_written=False).exists() == False
+        ]):
             #Defer the finish callback when we've processed all shards
             self.status = ImportStatus.FINISHED
             defer_finish = True
@@ -303,9 +317,14 @@ class ImportTask(models.Model):
             self.defer(self.finish)
         return result
 
+    def handle_error(self, lineno, data, errors):
+        pass
+
+
 class ModelImportTaskMixin(object):
     def import_row(self, forms, cleaned_data):
         return [ form.save() for form in forms ]
+
 
 class ImportShard(models.Model):
     task = models.ForeignKey(ImportTask)
@@ -315,6 +334,12 @@ class ImportShard(models.Model):
     total_rows = models.PositiveIntegerField(default=0)
     start_line_number = models.PositiveIntegerField(default=0)
     complete = models.BooleanField(default=False)
+    error_csv_filename = models.CharField(max_length=1023)
+    error_csv_written = models.BooleanField(default=False)
+
+    def __init__(self, *args, **kwargs):
+        self.errors = []
+        super(ImportShard, self).__init__(*args, **kwargs)
 
     def process(self):
         meta = self.task.get_meta()
@@ -352,7 +377,7 @@ class ImportShard(models.Model):
                         for err in e.messages:
                             errors.append(err)
 
-                    self.task.handle_error(this.start_line_number + i, cleaned_data, errors)
+                    self.handle_error(this.start_line_number + i, cleaned_data, errors)
             else:
                 # We've encountered an error, call the error handler
                 errors = []
@@ -361,7 +386,7 @@ class ImportShard(models.Model):
                         for err in errs:
                             errors.append("{0}: {1}".format(name, err))
 
-                self.task.handle_error(this.start_line_number + i, data, errors)
+                self.handle_error(this.start_line_number + i, data, errors)
 
             #Now update the last processed row, transactionally
             @transactional
@@ -389,3 +414,57 @@ class ImportShard(models.Model):
                 _this.save()
 
             update_task(this)
+            deferred.defer(this._finalize_errors, _queue=self.task.get_meta().queue)
+
+    def handle_error(self, lineno, data, errors):
+        self.task.handle_error(lineno, data, errors)
+        self._write_error_row(data, errors)
+
+    def _write_error_row(self, data, errors):
+        if not get_model(*self.task.model_path.split(".")).get_meta().generate_error_csv:
+            return
+
+        cols = getattr(self.task, "detected_columns", sorted(data.keys())) + [ "errors" ]
+        ImportShardError.objects.create(
+            shard=self,
+            line=json.dumps(data.values() + [ ". ".join(errors) ])
+        )
+
+    def _error_csv_filename(self):
+        meta = self.task.get_meta()
+        return "/%s/%s/%s-shard-%s.csv" % (
+            get_default_gcs_bucket_name(),
+            meta.error_csv_subdirectory,
+            self.task.pk,
+            self.pk
+        )
+
+    def _finalize_errors(self):
+        self = self.__class__.objects.get(pk=self.pk)
+        task_model = get_model(*self.task.model_path.split("."))
+        task = task_model.objects.get(pk=self.task_id)
+
+        if not task_model.get_meta().generate_error_csv:
+            self.error_csv_written = True
+            self.save()
+            task.save()
+            return
+
+        self.error_csv_filename = self._error_csv_filename()
+
+        @transactional
+        def _write(_this):
+            with cloudstorage.open(self.error_csv_filename, "w") as f:
+                writer = csv.writer(f)
+                for error in self.importsharderror_set.all():
+                    writer.writerow(json.loads(error.line))
+            self.error_csv_written = True
+            self.save()
+            task.save()
+
+        _write(self)
+
+
+class ImportShardError(models.Model):
+    shard = models.ForeignKey(ImportShard)
+    line = models.TextField()
