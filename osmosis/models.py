@@ -29,7 +29,7 @@ def transactional(func):
     if "djangoappengine" in unicode(connections['default']) or \
         "djangae" in unicode(connections['default']):
 
-        @db.transactional
+        @db.transactional(xg=True)
         def _wrapped(*args, **kwargs):
             return func(*args, **kwargs)
 
@@ -50,7 +50,7 @@ class ImportStatus(object):
     def choices(cls):
         return ((ImportStatus.PENDING, "Pending"), (ImportStatus.IN_PROGRESS, "In Progress"), (ImportStatus.FINISHED, "Finished"))
 
-class ImportTask(models.Model):
+class AbstractImportTask(models.Model):
     model_path = models.CharField(max_length=500, editable=False)
 
     source_data = models.FileField("File", upload_to="/", max_length=1023) #FIXME: We should make upload_to somehow configurable
@@ -61,11 +61,17 @@ class ImportTask(models.Model):
     row_count = models.PositiveIntegerField(default=0, editable=False)
     shard_count = models.PositiveIntegerField(default=0, editable=False)
     shards_processed = models.PositiveIntegerField(default=0, editable=False)
+    # This field is here because we dont have foreign key relation anymore and
+    # retrieving this from ImportShard wasn't possible due to transaction
+    shards_error_csv_written = models.BooleanField(default=False, editable=False)
 
     status = models.CharField(max_length=32, choices=ImportStatus.choices(), default=ImportStatus.PENDING, editable=False)
 
+    class Meta:
+        abstract = True
+
     def __init__(self, *args, **kwargs):
-        super(ImportTask, self).__init__(*args, **kwargs)
+        super(AbstractImportTask, self).__init__(*args, **kwargs)
         if not self.model_path:
             self.model_path = ".".join([self._meta.app_label, self.__class__.__name__])
 
@@ -117,9 +123,9 @@ class ImportTask(models.Model):
 
         if not hasattr(meta, "_initialised"):
 
-            for attr in ( x for x in dir(ImportTask.Osmosis) if not x.startswith("_") ):
+            for attr in ( x for x in dir(AbstractImportTask.Osmosis) if not x.startswith("_") ):
                 if not hasattr(meta, attr):
-                    setattr(meta, attr, getattr(ImportTask.Osmosis, attr))
+                    setattr(meta, attr, getattr(AbstractImportTask.Osmosis, attr))
 
             #If we were given any forms by their module path, then swap them here
             #so that meta.forms is always a list of classes
@@ -228,7 +234,8 @@ class ImportTask(models.Model):
                 #If we hit the predefined shard count, or the EOF of the file then process what we have
 
                 new_shard = ImportShard.objects.create(
-                    task=self,
+                    task_id=self.pk,
+                    task_model_path=self.model_path,
                     source_data_json=json.dumps(shard_data),
                     last_row_processed=0,
                     total_rows=data_length,
@@ -301,17 +308,18 @@ class ImportTask(models.Model):
 
     def save(self, *args, **kwargs):
         defer_finish = False
+
         if all([
             self.status == ImportStatus.IN_PROGRESS,
             self.shard_count,
             self.shards_processed == self.shard_count,
-            self.importshard_set.filter(error_csv_written=False).exists() == False
+            not self.shards_error_csv_written,
         ]):
             #Defer the finish callback when we've processed all shards
             self.status = ImportStatus.FINISHED
             defer_finish = True
 
-        result = super(ImportTask, self).save(*args, **kwargs)
+        result = super(AbstractImportTask, self).save(*args, **kwargs)
 
         if defer_finish:
             self.defer(self.finish)
@@ -327,7 +335,8 @@ class ModelImportTaskMixin(object):
 
 
 class ImportShard(models.Model):
-    task = models.ForeignKey(ImportTask)
+    task_model_path = models.CharField(max_length=500, editable=False)
+    task_id = models.PositiveIntegerField()
 
     source_data_json = models.TextField()
     last_row_processed = models.PositiveIntegerField(default=0)
@@ -340,6 +349,11 @@ class ImportShard(models.Model):
     def __init__(self, *args, **kwargs):
         self.errors = []
         super(ImportShard, self).__init__(*args, **kwargs)
+
+    @property
+    def task(self):
+        model = get_model(*self.task_model_path.split("."))
+        return model.objects.get(pk=self.task_id)
 
     def process(self):
         meta = self.task.get_meta()
@@ -446,6 +460,7 @@ class ImportShard(models.Model):
 
         if not task_model.get_meta().generate_error_csv:
             self.error_csv_written = True
+            task.shards_error_csv_written = True
             self.save()
             task.save()
             return
@@ -459,6 +474,7 @@ class ImportShard(models.Model):
                 for error in self.importsharderror_set.all():
                     writer.writerow(json.loads(error.line))
             self.error_csv_written = True
+            task.shards_error_csv_written = True
             self.save()
             task.save()
 
