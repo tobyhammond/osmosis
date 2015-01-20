@@ -293,7 +293,7 @@ class AbstractImportTask(models.Model):
             with cloudstorage.open(self.error_csv_filename, 'w') as f:
                 # Concat all error csvs from shards into 1 file
                 has_written = False
-                for shard in self.importshard_set.all():
+                for shard in ImportShard.objects.filter(task_id=self.pk, task_model_path=self.model_path):
                     if not shard.error_csv_filename:
                         continue
 
