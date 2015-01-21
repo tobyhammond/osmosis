@@ -340,6 +340,14 @@ class AbstractImportTask(models.Model):
         pass
 
 
+class ImportTask(AbstractImportTask):
+    """
+    Concrete implementation of AbstractImportTask
+    It exists for compatibility purposes, you should not use it for new projects
+    """
+    pass
+
+
 class ModelImportTaskMixin(object):
     def import_row(self, forms, cleaned_data):
         return [form.save() for form in forms]

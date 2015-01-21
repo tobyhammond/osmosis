@@ -9,11 +9,7 @@ import mock
 
 # OSMOSIS
 from osmosis.forms import BooleanInterpreterMixin
-from osmosis.models import AbstractImportTask, ImportShard, ImportStatus
-
-
-class ImportTask(AbstractImportTask):
-    pass
+from osmosis.models import ImportTask, ImportShard, ImportStatus
 
 
 TEST_FILE_ONE = StringIO.StringIO()
@@ -45,8 +41,8 @@ class ImportTaskTests(TestCase):
         patches = [
             mock.patch('google.appengine.ext.deferred.defer'),
             mock.patch('osmosis.models.ImportShard.objects.create'),
-            mock.patch('osmosis.tests.ImportTask.objects.get', side_effect=lambda *args, **kwargs: task),
-            mock.patch('osmosis.tests.ImportTask.save')
+            mock.patch('osmosis.models.ImportTask.objects.get', side_effect=lambda *args, **kwargs: task),
+            mock.patch('osmosis.models.ImportTask.save')
         ]
 
         with nested(*patches) as (mock_def, mock_create, mock_get, mock_save):
@@ -70,11 +66,11 @@ class ImportTaskTests(TestCase):
             else:
                 return shard2
 
-        with mock.patch('osmosis.tests.ImportTask.import_row'):
-            with mock.patch('osmosis.tests.ImportTask.save'):
+        with mock.patch('osmosis.models.ImportTask.import_row'):
+            with mock.patch('osmosis.models.ImportTask.save'):
                 with mock.patch('osmosis.models.ImportShard.save'):
                     with mock.patch('osmosis.models.ImportShard.objects.get', autospec=True, side_effect=shard_get):
-                        with mock.patch('osmosis.tests.ImportTask.objects.get', return_value=task):
+                        with mock.patch('osmosis.models.ImportTask.objects.get', return_value=task):
                             shard1.process()
 
                             self.assertEqual(1, task.shards_processed)
