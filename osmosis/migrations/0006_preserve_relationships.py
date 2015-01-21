@@ -1,51 +1,27 @@
 # -*- coding: utf-8 -*-
 from south.utils import datetime_utils as datetime
 from south.db import db
-from south.v2 import SchemaMigration
+from south.v2 import DataMigration
 from django.db import models
 
-
-class Migration(SchemaMigration):
+class Migration(DataMigration):
 
     def forwards(self, orm):
-        # Adding field 'ImportTask.shards_error_csv_written'
-        db.add_column(u'osmosis_importtask', 'shards_error_csv_written',
-                      self.gf('django.db.models.fields.BooleanField')(default=False),
-                      keep_default=False)
+        "Write your forwards methods here."
+        # Note: Don't use "from appname.models import ModelName". 
+        # Use orm.ModelName to refer to models in this application,
+        # and orm['appname.ModelName'] for models in other applications.
 
-        # Deleting field 'ImportShard.task'
-        db.delete_column(u'osmosis_importshard', 'task_id')
-
-        # Adding field 'ImportShard.task_model_path'
-        db.add_column(u'osmosis_importshard', 'task_model_path',
-                      self.gf('django.db.models.fields.CharField')(default='', max_length=500),
-                      keep_default=False)
-
-        # Adding field 'ImportShard.task_id'
-        db.add_column(u'osmosis_importshard', 'task_id',
-                      self.gf('django.db.models.fields.PositiveIntegerField')(default=0),
-                      keep_default=False)
-
+        # Keep the relation between existing Shards and Tasks
+        shards = orm['osmosis.ImportShard'].objects.all()
+        for shard in shards:
+            task = shard.task
+            shard.task_pk = task.pk
+            shard.task_model_path = task.model_path
+            shard.save()
 
     def backwards(self, orm):
-        # Deleting field 'ImportTask.shards_error_csv_written'
-        db.delete_column(u'osmosis_importtask', 'shards_error_csv_written')
-
-
-        # User chose to not deal with backwards NULL issues for 'ImportShard.task'
-        raise RuntimeError("Cannot reverse this migration. 'ImportShard.task' and its values cannot be restored.")
-        
-        # The following code is provided here to aid in writing a correct migration        # Adding field 'ImportShard.task'
-        db.add_column(u'osmosis_importshard', 'task',
-                      self.gf('django.db.models.fields.related.ForeignKey')(to=orm['osmosis.ImportTask']),
-                      keep_default=False)
-
-        # Deleting field 'ImportShard.task_model_path'
-        db.delete_column(u'osmosis_importshard', 'task_model_path')
-
-        # Deleting field 'ImportShard.task_id'
-        db.delete_column(u'osmosis_importshard', 'task_id')
-
+        "Write your backwards methods here."
 
     models = {
         u'osmosis.importshard': {
@@ -57,8 +33,9 @@ class Migration(SchemaMigration):
             'last_row_processed': ('django.db.models.fields.PositiveIntegerField', [], {'default': '0'}),
             'source_data_json': ('django.db.models.fields.TextField', [], {}),
             'start_line_number': ('django.db.models.fields.PositiveIntegerField', [], {'default': '0'}),
-            'task_id': ('django.db.models.fields.PositiveIntegerField', [], {}),
+            'task': ('django.db.models.fields.related.ForeignKey', [], {'to': u"orm['osmosis.ImportTask']"}),
             'task_model_path': ('django.db.models.fields.CharField', [], {'max_length': '500'}),
+            'task_pk': ('django.db.models.fields.PositiveIntegerField', [], {}),
             'total_rows': ('django.db.models.fields.PositiveIntegerField', [], {'default': '0'})
         },
         u'osmosis.importsharderror': {
@@ -83,3 +60,4 @@ class Migration(SchemaMigration):
     }
 
     complete_apps = ['osmosis']
+    symmetrical = True
