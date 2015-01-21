@@ -477,7 +477,6 @@ class ImportShard(models.Model):
 
         self.error_csv_filename = self._error_csv_filename()
 
-        @transactional
         def _write(_this):
             with cloudstorage.open(self.error_csv_filename, "w") as f:
                 writer = csv.writer(f)
