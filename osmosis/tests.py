@@ -12,8 +12,6 @@ from osmosis.forms import BooleanInterpreterMixin
 from osmosis.models import ImportTask, ImportShard, ImportStatus
 
 
-
-
 TEST_FILE_ONE = StringIO.StringIO()
 TEST_FILE_ONE.write("""
 Field1, Field2, Field3
@@ -24,6 +22,7 @@ value1, value2, value3
 value1, value2, value3
 """.lstrip())
 TEST_FILE_ONE.seek(0)
+
 
 class ImportTaskTests(TestCase):
     def test_start_defers_process(self):
@@ -56,8 +55,10 @@ class ImportTaskTests(TestCase):
 
         task = ImportTask()
 
-        shard1 = ImportShard(task=task, id=1, source_data_json="[{}]", total_rows=1)
-        shard2 = ImportShard(task=task, id=2, source_data_json="[{}]", total_rows=1)
+        shard1 = ImportShard(task_id=task.pk, task_model_path=task.model_path,
+                             id=1, source_data_json="[{}]", total_rows=1)
+        shard2 = ImportShard(task_id=task.pk, task_model_path=task.model_path,
+                             id=2, source_data_json="[{}]", total_rows=1)
 
         def shard_get(*args, **kwargs):
             if kwargs.values()[0] == 1:
@@ -97,7 +98,6 @@ class ImportTaskTests(TestCase):
                 task.save()
                 self.assertFalse(def_patch.called) #Already been called, so shouldn't happen again
 
-
     def test_error_callback_on_error(self):
         pass
 
@@ -128,7 +128,7 @@ class FormTests(TestCase):
         """
         class ImportShardForm(BooleanInterpreterMixin, forms.ModelForm):
             class Meta:
-                model = ImportShard # This model just happens to have a BooleanField on it
+                model = ImportShard  # This model just happens to have a BooleanField on it
                 fields = ('complete',)
 
         checks = {
@@ -139,7 +139,7 @@ class FormTests(TestCase):
         for expected_boolean, values in checks.items():
             for input_value in values:
                 form = ImportShardForm({'complete': input_value})
-                assert form.is_valid() # for the sanity of the test & to generate cleaned_data
+                assert form.is_valid()  # For the sanity of the test & to generate cleaned_data
                 form_value = form.cleaned_data['complete']
                 self.assertEqual(
                     form_value, expected_boolean,
