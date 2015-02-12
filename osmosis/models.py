@@ -293,7 +293,16 @@ class AbstractImportTask(models.Model):
             with cloudstorage.open(self.error_csv_filename, 'w') as f:
                 # Concat all error csvs from shards into 1 file
                 has_written = False
-                for shard in ImportShard.objects.filter(task_id=self.pk, task_model_path=self.model_path):
+
+                shards = ImportShard.objects.filter(task_id=self.pk, task_model_path=self.model_path)
+
+                # The shards haven't necessarily finished writing their error files when this is called,
+                # because that happens in a defer. So we redefer this until they're all done.
+                if [shard for shard in shards if not shard.error_csv_written]:
+                    self.defer(self.finish)
+                    return
+
+                for shard in shards:
                     if not shard.error_csv_filename:
                         continue
 
