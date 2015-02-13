@@ -287,6 +287,11 @@ class AbstractImportTask(models.Model):
         """
         Called when all shards have finished processing
         """
+
+        # If this was called before, don't do anything
+        if self.status == ImportStatus.FINISHED:
+            return
+
         if self.get_meta().generate_error_csv:
             self.error_csv_filename = self._error_csv_filename()
 

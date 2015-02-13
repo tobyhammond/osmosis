@@ -94,10 +94,6 @@ class ImportTaskTests(TestCase):
 
                 self.assertTrue(def_patch.called)
 
-            with mock.patch('google.appengine.ext.deferred.defer') as def_patch:
-                task.save()
-                self.assertFalse(def_patch.called) #Already been called, so shouldn't happen again
-
     def test_error_callback_on_error(self):
         pass
 
