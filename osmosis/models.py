@@ -322,9 +322,11 @@ class AbstractImportTask(models.Model):
                 # Create a blobstore key for the GCS file
                 blob_key = create_gs_key('/gs%s' % self.error_csv_filename)
                 self.error_csv = '%s/errors.csv' % blob_key
-                self.save()
             else:
                 cloudstorage.delete(self.error_csv_filename)
+
+        self.status = ImportStatus.FINISHED
+        self.save()
 
     def save(self, *args, **kwargs):
         defer_finish = False
@@ -336,7 +338,6 @@ class AbstractImportTask(models.Model):
             not self.shards_error_csv_written,
         ]):
             # Defer the finish callback when we've processed all shards
-            self.status = ImportStatus.FINISHED
             defer_finish = True
 
         result = super(AbstractImportTask, self).save(*args, **kwargs)
