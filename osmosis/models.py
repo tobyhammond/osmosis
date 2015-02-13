@@ -493,19 +493,21 @@ class ImportShard(models.Model):
             task.save()
             return
 
-        self.error_csv_filename = self._error_csv_filename()
+        errors = self.importsharderror_set.all()
+        if errors:
+            self.error_csv_filename = self._error_csv_filename()
 
-        def _write(_this):
-            with cloudstorage.open(self.error_csv_filename, "w") as f:
-                writer = csv.writer(f)
-                for error in self.importsharderror_set.all():
-                    writer.writerow(json.loads(error.line))
-            self.error_csv_written = True
-            task.shards_error_csv_written = True
-            self.save()
-            task.save()
+            def _write(_this):
+                with cloudstorage.open(self.error_csv_filename, "w") as f:
+                    writer = csv.writer(f)
+                    for error in errors:
+                        writer.writerow(json.loads(error.line))
+            _write(self)
 
-        _write(self)
+        self.error_csv_written = True
+        task.shards_error_csv_written = True
+        self.save()
+        task.save()
 
 
 class ImportShardError(models.Model):
