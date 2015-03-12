@@ -314,7 +314,7 @@ class AbstractImportTask(models.Model):
                     # If this is the first row, write the column headers
                     if not has_written:
                         data = json.loads(shard.source_data_json)[0]
-                        cols = getattr(self, "detected_columns", sorted(data.keys())) + [ "errors" ]
+                        cols = getattr(self, "detected_columns", data.keys()) + [ "errors" ]
                         csvwriter = csv.writer(f)
                         csvwriter.writerow(cols)
                         has_written = True
