@@ -6,6 +6,10 @@ into a database on the Google AppEngine platform
 
 ## Basic usage
 
+### Settings
+
+Add `'osmosis'` to your `INSTALLED_APPS`
+
 ### Model
 In your project, subclass `AbstractImportTask`, add your forms, and other
 parameters if you need. Example::
