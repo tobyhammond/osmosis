@@ -169,14 +169,6 @@ class AbstractImportTask(models.Model):
         Return None to denote the EOF
         Return False to skip this row of data entirely
         """
-        line = handle.readline()  # By default, assume CSV
-
-        if not line:
-            return None
-
-        if not line.strip():
-            # Skip lines with just whitespace
-            return False
 
         if not getattr(self, "detected_dialect", None):
             # Sniff for the dialect of the CSV file
@@ -204,19 +196,27 @@ class AbstractImportTask(models.Model):
 
             self.detected_dialect = {x: getattr(dialect, x) for x in dialect_attrs}
 
-        reader = csv.reader(StringIO.StringIO(line), **self.detected_dialect)
+        if not getattr(self, "reader", None):
+            self.reader = csv.reader(handle, **self.detected_dialect)
 
         if not getattr(self, "detected_columns", None):
             # On first iteration, the line will be the column headings,
             # store those and return False to skip processing
-            columns = reader.next()
+            columns = self.reader.next()
             self.detected_columns = columns
             return False
 
         cols = self.detected_columns
-        values = reader.next()
 
-        return {x: values[i] for i, x in enumerate(cols)}
+        try:
+            values = self.reader.next()
+        except StopIteration:
+            return None
+
+        if not values:
+            return None
+
+        return dict(zip(cols, values))
 
     def process(self):
         # Reload, we've been pickled in'it
