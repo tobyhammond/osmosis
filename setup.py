@@ -14,6 +14,7 @@ setup(
     packages=PACKAGES,
     include_package_data=True,
     install_requires=[
+        'unicodecsv',
         'GoogleAppEngineCloudStorageClient',
     ],
 )

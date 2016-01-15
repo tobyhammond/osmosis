@@ -1,5 +1,5 @@
 import json
-import csv
+import unicodecsv as csv
 import StringIO
 
 from django.db import models
