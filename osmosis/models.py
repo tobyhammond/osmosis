@@ -2,6 +2,7 @@ import json
 import unicodecsv as csv
 import StringIO
 
+from django.apps import apps
 from django.db import models
 from django.db import connections
 from django.db import transaction
@@ -82,6 +83,7 @@ class AbstractImportTask(models.Model):
         generate_error_csv = True
         queue = deferred.deferred._DEFAULT_QUEUE
         error_csv_subdirectory = "osmosis-errors"
+        shard_model = "osmosis.ImportShard"
 
     @classmethod
     def required_fields(cls):
@@ -151,6 +153,11 @@ class AbstractImportTask(models.Model):
             meta._initialised = True
 
         return meta
+
+    @classmethod
+    def get_shard_model(cls):
+        shard_model = cls.get_meta().shard_model.split('.')
+        return apps.get_model(app_label=shard_model[0], model_name=shard_model[1])
 
     def defer(self, kallable, *args, **kwargs):
         kwargs['_queue'] = self.get_meta().queue
@@ -244,7 +251,7 @@ class AbstractImportTask(models.Model):
                 # If we hit the predefined shard count, or the EOF of the
                 # file then process what we have
 
-                new_shard = ImportShard.objects.create(
+                new_shard = self.get_shard_model().objects.create(
                     task_id=self.pk,
                     task_model_path=self.model_path,
                     source_data_json=json.dumps(shard_data),
@@ -299,7 +306,7 @@ class AbstractImportTask(models.Model):
                 # Concat all error csvs from shards into 1 file
                 has_written = False
 
-                shards = ImportShard.objects.filter(task_id=self.pk, task_model_path=self.model_path)
+                shards = self.get_shard_model().objects.filter(task_id=self.pk, task_model_path=self.model_path)
 
                 # The shards haven't necessarily finished writing their error files when this is called,
                 # because that happens in a defer. So we redefer this until they're all done.
@@ -486,6 +493,9 @@ class ImportShard(models.Model):
             self.pk
         )
 
+    def _get_errors(self):
+        return self.importsharderror_set.all()
+
     def _finalize_errors(self):
         self = self.__class__.objects.get(pk=self.pk)
         task_model = get_model(*self.task.model_path.split("."))
@@ -498,7 +508,7 @@ class ImportShard(models.Model):
             task.save()
             return
 
-        errors = self.importsharderror_set.all()
+        errors = self._get_errors()
         if errors:
             self.error_csv_filename = self._error_csv_filename()
 
