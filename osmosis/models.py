@@ -294,6 +294,8 @@ class AbstractImportTask(models.Model):
         """
         Called when all shards have finished processing
         """
+        # Refresh object
+        self = self._meta.model.objects.get(pk=self.pk)
 
         # If this was called before, don't do anything
         if self.status == ImportStatus.FINISHED:
