@@ -397,10 +397,11 @@ class ImportShard(models.Model):
         return model.objects.get(pk=self.task_id)
 
     def process(self):
+        imported_rows = []
         meta = self.task.get_meta()
         task_model = get_model(*self.task.model_path.split("."))
 
-        this = ImportShard.objects.get(pk=self.pk)  # Reload, self is pickled
+        this = self.__class__.objects.get(pk=self.pk)  # Reload, self is pickled
         source_data = json.loads(this.source_data_json)
 
         # If there are no rows to process
@@ -419,7 +420,7 @@ class ImportShard(models.Model):
                     cleaned_data.update(form.cleaned_data)
 
                 try:
-                    self.task.import_row(forms, cleaned_data)
+                    imported_rows.append(self.task.import_row(forms, cleaned_data))
                 except ValidationError, e:
                     # We allow subclasses to raise a validation error on import_row
                     errors = []
@@ -446,7 +447,7 @@ class ImportShard(models.Model):
             # Now update the last processed row, transactionally
             @transactional
             def update_shard(_this):
-                _this = ImportShard.objects.get(pk=_this.pk)
+                _this = _this.__class__.objects.get(pk=_this.pk)
                 _this.last_row_processed += 1
                 _this.save()
                 return _this
@@ -456,20 +457,22 @@ class ImportShard(models.Model):
             mark_shard_complete = i == this.total_rows - 1
 
         if mark_shard_complete:
-            @transactional
-            def update_task(_this):
-                if _this.complete:
-                    return
-
-                task = task_model.objects.get(pk=_this.task_id)
-                task.shards_processed += 1
-                task.save()
-
-                _this.complete = True
-                _this.save()
-
-            update_task(this)
+            self.finish(imported_rows)
             deferred.defer(this._finalize_errors, _queue=self.task.get_meta().queue)
+
+    @transactional
+    def finish(self, imported_rows=None):
+        self = self.__class__.objects.get(pk=self.pk)
+        if self.complete:
+            return
+
+        task_model = get_model(*self.task.model_path.split("."))
+        task = task_model.objects.get(pk=self.task_id)
+        task.shards_processed += 1
+        task.save()
+
+        self.complete = True
+        self.save()
 
     def handle_error(self, lineno, data, errors):
         self.task.handle_error(lineno, data, errors)
